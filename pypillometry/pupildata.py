@@ -22,6 +22,7 @@ from scipy import interpolate
 import scipy
 from random import choice
 import pickle
+import re
 
 import collections.abc
 
@@ -46,13 +47,39 @@ if version.parse(np.__version__) >= version.parse("2.0"):
 
 ## decoratory to keep a history of actions performed on dataset
 # can only be used with functions that return "self" 
+# def keephistory(func):
+#     @functools.wraps(func)
+#     def wrapper(*args,**kwargs):
+#         obj=func(*args,**kwargs)
+#         funcname=func.__name__
+#         argstr=",".join(["%s"%(v) for v in args[1:]])
+#         kwargstr=",".join(["%s=%s"%(k,v) for k,v in kwargs.items()])
+#         allargs=argstr
+#         if len(allargs)>0 and len(kwargstr)>0:
+#             allargs+=","+kwargstr
+#         elif len(kwargstr)>0:
+#             allargs+=kwargstr
+#         fstr="{func}({allargs})".format(func=funcname, allargs=allargs)
+#         #fstr="{func}({argstr},{kwargstr})".format(func=funcname,argstr=argstr,kwargstr=kwargstr)
+#         obj.add_to_history({"funcstring":fstr, "funcname":funcname, "args":args[1:], "kwargs":kwargs})
+#         return obj
+#     return wrapper
+        
+## decoratory to keep a history of actions performed on dataset
+# can only be used with functions that return "self" 
 def keephistory(func):
     @functools.wraps(func)
     def wrapper(*args,**kwargs):
         obj=func(*args,**kwargs)
         funcname=func.__name__
-        argstr=",".join(["%s"%(v) for v in args[1:]])
-        kwargstr=",".join(["%s=%s"%(k,v) for k,v in kwargs.items()])
+
+        if funcname == 'blinks_detect_eyelink':
+            argstr = ""
+            kwargstr = ""
+        else:
+            argstr = ",".join(["%s" % (v) for v in args[1:]])
+            kwargstr = ",".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
+
         allargs=argstr
         if len(allargs)>0 and len(kwargstr)>0:
             allargs+=","+kwargstr
@@ -63,8 +90,6 @@ def keephistory(func):
         obj.add_to_history({"funcstring":fstr, "funcname":funcname, "args":args[1:], "kwargs":kwargs})
         return obj
     return wrapper
-        
-             
 
 #@typechecked
 class PupilData:
@@ -971,6 +996,103 @@ class PupilData:
         blinks=helper_merge_blinks(blinks_vel, blinks_zero)
         obj.blinks=np.array([[on,off] for (on,off) in blinks if off-on>=min_duration_ix])
         
+        obj.blink_mask=np.zeros(self.sy.size, dtype=int)
+        
+        for start,end in obj.blinks:
+            obj.blink_mask[start:end]=1
+        return obj    
+    
+    @keephistory
+    def blinks_detect_eyelink(self, events, inplace=_inplace):
+        """
+        Detects blinks from Eyelink events and updates the object's blink data.
+
+        Parameters:
+        -----------
+        events : list of str
+            A list of event strings from Eyelink data. Each event string should contain the 'EBLINK' keyword followed by relevant blink data.
+        inplace : bool, optional
+            If True, modifies the current object. If False, returns a copy of the object with the blink data. Default is the value of _inplace.
+
+        Returns:
+        --------
+        obj : object
+            The object with updated blink data. If inplace is True, returns the modified object itself. Otherwise, returns a copy of the object with the blink data.
+
+        Notes:
+        ------
+        - The function filters the events to keep only those that indicate blink end ('EBLINK').
+        - It uses a regular expression to extract the start, end, and duration of each blink from the event strings.
+        - The blink data is stored in the object as an array of blink onset and offset times.
+        - The function also creates a blink mask, which is an array indicating the presence of blinks over time.
+        - The blink mask is stored in the object as `blink_mask`.
+
+        Example:
+        --------
+        >>> events = ["EBLINK L 123 456 333", "EBLINK R 789 1011 222"]
+        >>> obj = SomeClass()
+        >>> obj.blinks_detect_eyelink(events)
+        >>> print(obj.blinks)
+        array([[123, 456], [789, 1011]])
+        >>> print(obj.blink_mask)
+        array([...])
+
+        made by:
+        -------
+        Nicolás Sánchez-Fuenzalida, 2024
+
+        """
+
+        # Check if reset_time was called before
+        if any(entry['funcname'] == 'reset_time' for entry in self.history):
+            raise RuntimeError("blinks_detect_eyelink should be called before calling reset_time")
+    
+        obj=self if inplace else self.copy()
+
+        # keep only the events that indicate blink end
+        events = [event for event in events if 'EBLINK' in event]
+
+        # Blinks from eyelink
+    
+        # Find the string EBLINK and capture the four following strings
+        # The first following string indicates which eye the blink is from (L or R)
+        # The second following string indicates the start of the blink (numeric)
+        # The third following string indicates the end of the blink (numeric)
+        # The fourth following string indicates the duration of the blink (numeric)
+
+        # use regular expression to get third, fourth and fifth elements
+        pattern = re.compile('([0-9]+)\\t([0-9]+)\\t([0-9]+)')
+
+        blinks_eyelink = []
+        for event in events:
+            # get start, end and duration
+            times = pattern.findall(event)[0]
+            # if there are less than three values skip and throw warning
+            if len(times) < 3:
+                print(f'Warning: {event}')
+                continue    
+            
+            blinks_eyelink.append([times[0], times[1], times[2]])
+            
+        # TODO: filter blinks based on duration
+
+        # make list with blink onset and offset
+        blinks_eyelink = np.array([[int(blink[0]), int(blink[1])] for blink in blinks_eyelink])
+
+        # convert timestamps to positions in sample list
+        blinks_eyelink_time_corrected = []
+        for s, e in blinks_eyelink:
+            s = np.where(obj.tx == s)[0][0]
+            e = np.where(obj.tx == e)[0][0]
+            blinks_eyelink_time_corrected.append([s, e])
+        
+        # convert to array
+        blinks_eyelink_time_corrected = np.array(blinks_eyelink_time_corrected)
+
+        # store blinks in object
+        obj.blinks=blinks_eyelink_time_corrected
+        
+        # create blink mask
         obj.blink_mask=np.zeros(self.sy.size, dtype=int)
         
         for start,end in obj.blinks:
