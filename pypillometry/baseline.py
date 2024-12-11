@@ -17,6 +17,11 @@ from scipy.interpolate import interp1d, splrep, splev
 from .pupil import *
 from .convenience import *
 
+# if NumPy lower than 2.0, set np.infty to np.inf
+from packaging import version
+if version.parse(np.__version__) >= version.parse("2.0"):
+    np.NaN = np.nan
+
 stan_code_baseline_model_asym_laplac="""
 // Stan model for pupil-baseline estimation
 //

@@ -39,6 +39,11 @@ _inplace=False ## default for whether or not inplace-operations should be used
 import inspect
 import functools
 
+# if NumPy lower than 2.0, set np.infty to np.inf
+from packaging import version
+if version.parse(np.__version__) >= version.parse("2.0"):
+    np.infty = np.inf
+
 ## decoratory to keep a history of actions performed on dataset
 # can only be used with functions that return "self" 
 def keephistory(func):
